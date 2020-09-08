@@ -1,0 +1,766 @@
+---
+title: "Snakes, Faces and Flowers"
+author: "Taehoon Kim, Dasom Kwon, & Do-Joon Yi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapse: false
+      smooth_scroll: false
+    number_sections: true
+    theme: cosmo 
+    highlight: tango
+    code_folding: hide
+subtitle: Effects of low-level visual attributes on threat detection
+mainfont: Noto Sans CJK KR
+---
+
+```{r, eval=TRUE, echo=FALSE}
+setwd("~/Dropbox/RProjects/bCFS_Snake/")
+# setwd("D://Dropbox/2017Experiment/CFS_Snake/")
+# load("data/bCSF_Snake200302_Interaction.RData")
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+```{r setups, message=TRUE, warning=TRUE}
+set.seed(12345) # for reproducibility
+options(knitr.kable.NA = '')
+
+if (!require("pacman", quietly = TRUE)) install.packages("pacman")
+pacman::p_load(stringr, tidyverse, parallel, afex, emmeans, cowplot, scales)
+pacman::p_load_gh("RLesur/klippy")
+klippy::klippy()
+
+pacman::p_load_gh("ropenscilabs/icon")
+
+set_sum_contrasts() # see Singmann & Kellen (2020)
+emm_options(lmer.df = "satterthwaite")
+options(dplyr.summarise.inform=FALSE) # 200603 regrouping 메시지 안 보이게 함.
+```
+
+
+# Image Statistics
+
+[SHINE(spectrum, histogram, and intensity normalization and equalization; Willenbockel et al., 2010)](http://www.mapageweb.umontreal.ca/gosselif/SHINE/) 툴박스를 사용하여 60개 영상(뱀, 얼굴, 꽃 각 20개)에서 물체가 차지한(즉, 배경을 제외한 전경의) 영역을 분석하고, 그 결과를 A와 C에 제시하였다. 원본 영상의 시각적 차이를 줄이기 위해 모든 영상을 회색 톤(greyscale)으로 변환한 후, 히스토그램 매칭과 푸리에 진폭 매칭 절차를 진행하였다. 히스토그램 매칭 절차에서는 개별 영상의 밝기 히스토그램을 전체 영상의 밝기 히스토그램 평균에 일치시킴으로써 영상들의 밝기와 대비 차이를 제거하였다(‘histMatch’ 함수). 푸리에 진폭 매칭 절차에서는 먼저 개별 영상들을 진폭 스펙트럼과 위상 스펙트럼으로 분리하고, 진폭 스펙트럼의 회전 평균(rotational average)을 전체 평균에 일치시켰다. 그다음, 변환된 진폭 스펙트럼과 고유의 위상 스펙트럼을 재결합하여 공간주파수 에너지 차이가 최소화된 영상들을 산출하였다(‘sfMatch’ 함수). 영상 처리로 생성된(‘SHINEd’) 영상들의 저수준 시각특질을 B와 D에 제시하였다. 새 영상들을 구성하는 화소들의 밝기 분포와 공간주파수의 회전 평균이 일치하고 있음을 알 수 있다.
+
+아래는 각 볌주 평균 영상의 luminance histogram: A는 원본(`Original`) 영상, B는 변환(`SHINEd`) 영상이다. 
+
+```{r lumHist, collapse=TRUE}
+lum1 <- read.csv(file="data/bCFS_snake_color.lumHist.csv", header = TRUE) # color
+lum2 <- read.csv(file="data/bCFS_snake_shine.lumHist.csv", header = TRUE) # shined
+lum1$Category = factor(lum1$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower"))
+lum2$Category = factor(lum2$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower"))
+
+head(lum1)
+tail(lum1)
+head(lum2)
+tail(lum2)
+
+fig.lum1 <- lum1 %>% ggplot(aes(x=Value, color=Category)) +
+  geom_freqpoly(binwidth = 1,  alpha = 1) + 
+  labs(x = "Luminance", y = "Pixel Count") +
+  coord_cartesian(ylim = c(0,1000), clip = "on") +
+  scale_y_continuous(breaks = seq(0,1000,200)) +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.75, 0.85),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+
+fig.lum2 <- lum2 %>% ggplot(aes(x=Value, color=Category)) +
+  geom_freqpoly(binwidth = 1,  alpha = 1) + 
+  labs(x = "Luminance", y = "Pixel Count") +
+  coord_cartesian(ylim = c(0,1000), clip = "on") +
+  scale_y_continuous(breaks = seq(0,1000,200)) +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.75, 0.85),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+cowplot::plot_grid(fig.lum1, fig.lum2, axis = "b",
+                   labels = c('A', 'B'), 
+                   label_size = 20)
+```
+
+아래는 모든 영상의 푸리에 스펙트라 회전 평균: C는 원본(`Original`) 영상, D는 변환(`SHINEd`) 영상이다. 
+
+```{r spectra, collapse=TRUE}
+sf1 <- read.csv(file="data/bCFS_snake_color.sfplot.csv", header = TRUE) # color
+sf2 <- read.csv(file="data/bCFS_snake_shine.sfplot.csv", header = TRUE) # shined
+
+head(sf1)
+tail(sf1)
+head(sf2)
+tail(sf2)
+
+sf1$IMname = factor(sf1$IMname)
+sf1$Category = factor(sf1$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower"))
+
+sf2$IMname = factor(sf2$IMname)
+sf2$Category = factor(sf2$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower"))
+
+
+fig.sf1 <- ggplot(data = sf1, aes(x=Frequency, y=Energy, group=IMname, color=Category)) +
+  geom_line(alpha = 1) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x))) +
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x)))	+
+  labs(x = "Spatial Frequency (cycles/image)", y = "Energy") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.75, 0.85),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+fig.sf2 <- ggplot(data = sf2, aes(x=Frequency, y=Energy, group=IMname, color=Category)) +
+  geom_line(alpha = 1) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x))) +
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x)))	+
+  labs(x = "Spatial Frequency (cycles/image)", y = "Energy") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.75, 0.85),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+cowplot::plot_grid(fig.sf1, fig.sf2, axis = "b",
+                   labels = c('C', 'D'), 
+                   label_size = 20)
+```
+
+****
+<br><br>
+
+
+# Experiment 1: Rating
+
+원자극(Original)을 평정한 28명의 자료와 통제된 자극(SHINEd)을 평정한 30명의 자료를 합쳐 분석한다.
+
+```{r scale_data, collapse=TRUE}
+S1 <- read.csv(file="data/bCFS_snake_rating_color.csv", header = TRUE)
+S2 <- read.csv(file="data/bCFS_snake_rating_shine.csv", header = TRUE)
+
+S1$VisAttr <- factor("Original") # 실험 요인 
+S2$VisAttr <- factor("SHINEd")
+
+S1$Subject <- factor(paste('e1s', str_pad(S1$Subject, 2, pad = "0"), sep = "")) # 참가자 
+S2$Subject <- factor(paste('e2s', str_pad(S2$Subject, 2, pad = "0"), sep = ""))
+
+S1$Image <- factor(str_replace_all(S1$Image, fixed(" "), ""))  # 파일명 앞 빈칸 삭제 
+S2$Image <- factor(str_replace_all(S2$Image, fixed(" "), ""))
+
+dim(S1)
+dim(S2)
+
+SS <- rbind(S1, S2) # 두 실험 자료를 합친다. 
+head(SS)
+tail(SS)
+
+SS <- SS %>% select(VisAttr, Subject, Image, Category, Valence, Arousal)
+SS$Category <- factor(SS$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower")) 
+
+str(SS) 
+# 1. VisAttr : 1_color, 2_shiend. Factor임을 확인할 것.
+# 2. Subject ID. Factor임을 확인할 것.
+# 3. Image ID. Factor임을 확인할 것.
+# 4. Category : stimulus category. 1-face, 2-flower, 3-snake
+# 5. Valence : 1(negative) ~ 9(positive)
+# 6. Arousal : 1(weak) ~ 9(strong)
+
+table(SS$Subject, SS$VisAttr)
+table(SS$Image, SS$VisAttr)
+table(SS$Category, SS$Subject)
+
+contrasts(SS$Category)
+contrasts(SS$VisAttr)
+```
+
+
+<br><br>
+
+
+## Valence
+
+정서가를 분석한다. 
+
+```{r valence_table, message = FALSE}
+SS %>% group_by(VisAttr, Category, Subject) %>% # subject-level
+  summarise(mn = mean(Valence), .groups="keep") %>% 
+  ungroup() %>% 
+  group_by(VisAttr, Category) %>% # group-level
+  summarise(Mean = mean(mn),
+            Std = sd(mn)) %>% 
+  ungroup() %>% 
+  knitr::kable()
+```
+
+`Category`(뱀, 얼굴, 꽃)와 `VisAttr`(*Low-Level Visual Attributes*; Original vs. SHINEd)를 고정효과로 `afex::mixed()`를 통해 선형혼합모형 분석을 실시하였다. 참가자(`Subject`)와 실험자극(`Image`)의 무선효과가 절편으로 포함되었다. `Category`는 참가자내 변인이고, `VisAttr`는 자극내 편인이므로 각각 기울기의 무선효과로 모형에 포함되었다. 
+
+```{r valence_lmer, eval=TRUE, collapse=TRUE}
+(nc <- detectCores())
+cl <- makeCluster(rep("localhost", nc))
+SSv.lmer <- afex::mixed(Valence ~ Category*VisAttr + (Category|Subject) + (VisAttr|Image), 
+                        data = SS, method = "S", cl = cl,
+                        control = lmerControl(optimizer = "bobyqa",
+                                              optCtrl = list(maxfun = 1e6)))
+stopCluster(cl)
+```
+
+```{r valence_res}
+anova(SSv.lmer)
+summary(SSv.lmer)
+```
+
+범주, 실험, 범주x실험 상호작용 효과가 모두 유의미하였다. 
+
+```{r valence_emm}
+SSv.lmer.emm <- emmeans(SSv.lmer, "Category", by = "VisAttr", lmerTest.limit = 3480)
+plot(SSv.lmer.emm, horizontal = FALSE, type = "response") + facet_grid(cols = vars(VisAttr))
+
+SSv.lmer.emm.pair <- update(pairs(SSv.lmer.emm), by = NULL, adjust = "holm") 
+# 'by=NULL'은 familywise error rate correction에 필요.
+SSv.lmer.emm.pair %>% summary(infer = TRUE)
+```
+
+시각특질을 통제한 후, 정서가의 극단값이 감소하였다. 원자극을 썼을 때는 뱀과 얼굴의 정서가가 비슷했으나 통제한 후에는 뱀의 정서가가 덜 부정적인 방향으로 바뀌었다. 
+
+<br><br>
+
+
+
+## Arousal
+
+각성 점수를 분석하였다. 
+
+```{r arousal_table}
+SS %>% group_by(VisAttr, Category, Subject) %>% # subject-level
+  summarise(mn = mean(Arousal)) %>% 
+  ungroup() %>% 
+  group_by(VisAttr, Category) %>% # group-level
+  summarise(Mean = mean(mn),
+            Std = sd(mn)) %>% 
+  ungroup() %>% 
+  knitr::kable()
+```
+
+각성 점수 분석을 위한 선형혼합모형은 이전과 같다. 
+
+```{r arousal_lmer, eval=TRUE, collapse=TRUE}
+cl <- makeCluster(rep("localhost", nc))
+SSa.lmer <- afex::mixed(Arousal ~ Category*VisAttr + (Category|Subject) + (VisAttr|Image), 
+                        data = SS, method = "S", cl = cl,
+                        control = lmerControl(optimizer = "bobyqa",
+                                              optCtrl = list(maxfun = 1e6)))
+stopCluster(cl)
+```
+
+```{r arousal_res}
+anova(SSa.lmer)
+summary(SSa.lmer)
+```
+
+범주, 실험, 범주x실험 상호작용 효과가 모두 유의미하였다. 
+
+```{r arousal_emm}
+SSa.lmer.emm <- emmeans(SSa.lmer, "Category", by = "VisAttr", lmerTest.limit = 3480)
+plot(SSa.lmer.emm, horizontal = FALSE, type = "response") + facet_grid(cols = vars(VisAttr))
+
+SSa.lmer.emm.pair <- update(pairs(SSa.lmer.emm), by = NULL, adjust = "holm")
+SSa.lmer.emm.pair %>% summary(infer = TRUE)
+```
+
+뱀의 각성 점수는 시각특질을 통제하지 않으면 얼굴과 비슷하고, 통제하면 꽃과 비슷했다. 
+
+<br><br>
+
+****
+
+<br><br>
+
+
+
+# Experiment 2: Breaking CFS
+
+원자극을 사용한 실험과 통제 자극을 사용한 실험 결과를 합쳐 분석한다. 각각 20명씩 총 40명의 자료이다. 
+
+```{r exp_data, collapse=TRUE}
+E1 <- read.csv(file="data/bCFS_snake_1_color.csv", header = TRUE)
+E2 <- read.csv(file="data/bCFS_snake_2_shine.csv", header = TRUE)
+
+E1$VisAttr <- factor("Original") # 실험 요인
+E2$VisAttr <- factor("SHINEd")
+
+E1$Subject <- factor(paste('e1s', str_pad(E1$Subject, 2, pad = "0"), sep = "")) # 참가자 
+E2$Subject <- factor(paste('e2s', str_pad(E2$Subject, 2, pad = "0"), sep = ""))
+
+E1$Image <- factor(str_replace_all(E1$Image, fixed(" "), ""))  # 파일명 앞 빈칸 삭제 
+E2$Image <- factor(str_replace_all(E2$Image, fixed(" "), ""))
+
+E1$LocCorr <- as.numeric(E1$LocCorr==1) # binarizing
+E1$CatCorr <- as.numeric(E1$CatCorr==1) 
+E2$LocCorr <- as.numeric(E2$LocCorr==1)
+E2$CatCorr <- as.numeric(E2$CatCorr==1) 
+
+E1$RT <- E1$RT*1000
+E2$RT <- E2$RT*1000
+
+EE <- rbind(E1, E2) # 두 실험 자료를 합친다. 
+head(EE)
+tail(EE)
+
+EE <- EE %>% select(VisAttr, Subject, Image, Category, RT, LocCorr, CatCorr)
+EE$Category <- factor(EE$Category, levels=c(1,3,2), labels=c("Face","Snake","Flower")) 
+
+str(EE) # 실험, 참가자, 이미지 factor 여부와 level 확인. 
+
+table(EE$Subject, EE$VisAttr)
+table(EE$Image, EE$VisAttr)
+
+contrasts(EE$Category)
+contrasts(EE$VisAttr)
+```
+
+
+
+<br><br>
+
+
+
+## Localization Accuracy
+
+표적의 위치 판단의 정확률을 분석하였다. 
+
+```{r exp_loc_table}
+EE %>% group_by(VisAttr, Category, Subject) %>% # subject-level
+  summarise(mn = mean(LocCorr)) %>% 
+  ungroup() %>% 
+  group_by(VisAttr, Category) %>% # group-level
+  summarise(Mean = mean(mn),
+            Std = sd(mn)) %>% 
+  ungroup() %>% 
+  knitr::kable()
+```
+
+
+```{r loc_acc_lmer, eval=TRUE}
+cl <- makeCluster(rep("localhost", nc))
+EEloc.glmer <- afex::mixed(LocCorr ~ Category*VisAttr + (Category|Subject) + (VisAttr|Image), 
+                           data = EE, method = "LRT", cl = cl,
+                           family = binomial(link="logit"), 
+                           control = glmerControl(optimizer = "bobyqa",
+                                                  optCtrl = list(maxfun = 1e6)))
+stopCluster(cl)
+```
+
+`Category`의 효과만 유의하였다. *Original* 자극을 썼을 때 뱀과 꽃의 차이만 있었다. 아래 사후분석 결과도 같다. 
+
+```{r loc_acc_res}
+anova(EEloc.glmer) # EEloc.glamer$anova_table을 프린트한다.
+summary(EEloc.glmer)
+```
+
+
+```{r loc_acc_emm}
+EEloc.glmer.emm <- emmeans(EEloc.glmer, "Category", by = "VisAttr", 
+                           lmerTest.limit = 3480, type = "response")
+plot(EEloc.glmer.emm, horizontal = FALSE) + facet_grid(cols = vars(VisAttr))
+
+EEloc.glmer.emm.pair <- update(pairs(EEloc.glmer.emm), by = NULL, adjust = "holm")
+EEloc.glmer.emm.pair %>% summary(infer = TRUE)
+```
+
+
+
+<br><br>
+
+
+
+## Breaking (= Localization) Time
+
+표적 위치를 보고하는 데 걸린 시간을 분석하였다. 
+
+
+```{r rt_data}
+numCorr <- EE %>% filter(LocCorr==1) %>% nrow() # correct RTs
+numAntici <- EE %>% filter(LocCorr==1 & RT < 200) %>% nrow() # anticipatory correct RTs
+
+EEcorr <- EE %>% filter(LocCorr == 1 & RT > 200)
+EEcorr %>% group_by(VisAttr, Category, Subject) %>% # subject-level
+  summarise(mn = mean(RT)) %>% 
+  ungroup() %>% 
+  group_by(VisAttr, Category) %>% # group-level
+  summarise(Mean = mean(mn),
+            Std = sd(mn)) %>% 
+  ungroup() %>% 
+  knitr::kable()
+```
+
+전체 `r numCorr`개의 정반응 중에서 0.2초보다 빠른 반응은 `r numAntici`개였다(`r 100*numAntici/numCorr`%).<br>
+Breaking Time이 정규 분포를 이루지 않으므로 log 값을 변환한다. 
+
+```{r rt_hist, fig.height=3}
+rt.dens <- ggplot(EEcorr, aes(x=RT)) + 
+  geom_density() + 
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+rt.log.dens <- EEcorr %>% 
+  mutate(logRT = log(RT)) %>% 
+  ggplot(aes(x=logRT)) + 
+  geom_density() + 
+  theme_bw(base_size = 18) + 
+  labs(x = "Log(RT)") + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+
+plot_grid(rt.dens, rt.log.dens, ncol = 2, label_size = 20)
+```
+
+```{r rt_log, eval=TRUE, collapse=TRUE}
+cl <- makeCluster(rep("localhost", nc))
+EErt.log <- afex::mixed(log(RT) ~ Category*VisAttr + (Category|Subject) + (VisAttr|Image), 
+                           data = EEcorr, method = "S", cl = cl,
+                           control = lmerControl(optimizer = "bobyqa",
+                                                 optCtrl = list(maxfun = 1e8)))
+stopCluster(cl)
+```
+
+```{r rt_log_res}
+anova(EErt.log)
+summary(EErt.log)
+```
+
+`Category`와 `Category x VisAttr` 효과가 유의하였다. 
+
+```{r rt_log_emm}
+EErt.log.emm <- emmeans(EErt.log, "Category", by = "VisAttr", 
+                        lmerTest.limit = 13598, type = "response")
+plot(EErt.log.emm, horizontal = FALSE) + facet_grid(cols = vars(VisAttr))
+
+EErt.log.emm.pair <- update(pairs(EErt.log.emm), by = NULL, adjust = "holm")
+EErt.log.emm.pair %>% summary(infer = TRUE)
+```
+
+Low-level visual attributes를 통제하기 전에는 세 범주들 간의 차이가 모두 유의하였다. 통제후에는 뱀과 꽃의 차이가 사라졌다. 
+
+
+<br><br>
+
+
+
+## Categorization Accuracy
+
+표적 범주 보고의 정확율을 분석하였다. 
+
+```{r exp_cat_table}
+EE %>% group_by(VisAttr, Category, Subject) %>% # subject-level
+  summarise(mn = mean(CatCorr)) %>% 
+  ungroup() %>% 
+  group_by(VisAttr, Category) %>% # group-level
+  summarise(Mean = mean(mn),
+            Std = sd(mn)) %>% 
+  ungroup() %>% 
+  knitr::kable()
+```
+
+```{r cat_acc_lmer, eval=TRUE, collapse=TRUE}
+cl <- makeCluster(rep("localhost", nc))
+EEcat.glmer <- afex::mixed(CatCorr ~ Category*VisAttr + (Category|Subject) + (VisAttr|Image), 
+                           data = EE, method = "LRT", cl = cl,
+                           family = binomial(link="logit"), 
+                           control = glmerControl(optimizer = "bobyqa",
+                                                  optCtrl = list(maxfun = 1e6)))
+stopCluster(cl)
+```
+
+
+```{r cat_acc_res}
+anova(EEcat.glmer)
+summary(EEcat.glmer)
+```
+
+
+```{r cat_acc_emm}
+EEcat.glmer.emm <- emmeans(EEcat.glmer, "Category", by = "VisAttr", 
+                           lmerTest.limit = 3480, type = "response")
+plot(EEcat.glmer.emm, horizontal = FALSE) + facet_grid(cols = vars(VisAttr))
+
+EEcat.glmer.emm.pair <- update(pairs(EEcat.glmer.emm), by = NULL, adjust = "holm")
+EEcat.glmer.emm.pair %>% summary(infer = TRUE)
+```
+
+꽃의 범주 판단이 visual attributes 통제 후 조금 정확해졌지만, 주목할 만한 변화는 아니었다. 
+
+<br><br>
+
+****
+
+<br><br>
+
+
+# Plots
+
+지금까지의 결과를 그림으로 정리하였다. 
+
+```{r fig_scale, eval=TRUE}
+pd <- position_dodge(.3)
+
+# Valence
+SSv.P <- as_tibble(SSv.lmer.emm) %>%
+  ggplot(aes(x=Category, y=emmean, ymin=lower.CL, ymax=upper.CL, 
+             color=VisAttr, shape=VisAttr)) +
+  geom_point(size = 4, position = pd) +
+  geom_errorbar(width = .2, position = pd) +
+  geom_line(aes(group = VisAttr), position = pd) + 
+  scale_color_manual(values = c("red", "black")) +
+  coord_cartesian(ylim = c(1,9), clip = "on") +
+  scale_y_continuous(breaks = seq(1,9)) +
+  labs(x = "Category", y = "Valence") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.35, 0.85),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+# Arousal
+SSa.P <- as_tibble(SSa.lmer.emm) %>%
+  ggplot(aes(x=Category, y=emmean, ymin=lower.CL, ymax=upper.CL, 
+             color=VisAttr, shape=VisAttr)) +
+  geom_point(size = 4, position = pd) +
+  geom_errorbar(width = .2, position = pd) +
+  geom_line(aes(group = VisAttr), position = pd) + 
+  scale_color_manual(values = c("red", "black")) +
+  coord_cartesian(ylim = c(1,9), clip = "on") +
+  scale_y_continuous(breaks = seq(1,9)) +
+  labs(x = "Category", y = "Arousal") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.6, 0.2),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+plot_grid(SSv.P, SSa.P, ncol = 2, labels = c('E', 'F'), label_size = 20)
+```
+
+
+
+```{r fig_acc, eval=TRUE}
+# Localization Accuracy
+EEloc.P <- as_tibble(EEloc.glmer.emm) %>%
+  ggplot(aes(x=Category, y=prob, ymin=asymp.LCL, ymax=asymp.UCL, 
+             color=VisAttr, shape=VisAttr)) +
+  geom_point(size = 4, position = pd) +
+  geom_errorbar(width = .2, position = pd) +
+  geom_line(aes(group = VisAttr), position = pd) + 
+  scale_color_manual(values = c("red", "black")) +
+  coord_cartesian(ylim = c(0.5,1), clip = "on") +
+  scale_y_continuous(breaks = seq(0.5,1,0.1)) +
+  labs(x = "Category", y = "Localization Accuracy") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.65, 0.4),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+# Categorization Accuracy
+EEcat.P <- as_tibble(EEcat.glmer.emm) %>%
+  ggplot(aes(x=Category, y=prob, ymin=asymp.LCL, ymax=asymp.UCL, 
+             color=VisAttr, shape=VisAttr)) +
+  geom_point(size = 4, position = pd) +
+  geom_errorbar(width = .2, position = pd) +
+  geom_line(aes(group = VisAttr), position = pd) + 
+  scale_color_manual(values = c("red", "black")) +
+  coord_cartesian(ylim = c(0.3,1), clip = "on") +
+  scale_y_continuous(breaks = seq(0.3,1,0.1)) +
+  labs(x = "Category", y = "Categorization Accuracy") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.65, 0.4),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+plot_grid(EEloc.P, EEcat.P, ncol = 2, labels = c('G', 'H'), label_size = 20)
+```
+
+
+```{r fig_bt, eval=TRUE}
+# Localization RT = Breaking Time
+EErt.P <- as_tibble(EErt.log.emm) %>%
+  mutate(BT = response/1000,
+         LCL = lower.CL/1000,
+         UCL = upper.CL/1000) %>%
+  ggplot(aes(x=Category, y=BT, ymin=LCL, ymax=UCL, 
+             color=VisAttr, shape=VisAttr)) +
+  geom_point(size = 4, position = pd) +
+  geom_errorbar(width = .2, position = pd) +
+  geom_line(aes(group = VisAttr), position = pd) + 
+  scale_color_manual(values = c("red", "black")) +
+  coord_cartesian(ylim = c(0,3), clip = "on") +
+  scale_y_continuous(breaks = seq(0,3,0.5)) +
+  labs(x = "Category", y = "Breaking Time (s)") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1,
+        legend.position = c(0.6, 0.2),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+
+plot_grid(EErt.P, ncol = 2, align = "hv", axis = "b",
+          labels = c('I'), label_size = 20)
+```
+
+
+<br><br>
+
+****
+
+<br><br>
+
+
+# BLUPS: Arousal and Breaking Time
+
+*Best Linear Unbiased Predictions (BLUPs)*은 선형혼합모형에서 추정한 무선 효과를 말한다. BLUPs을 예를 들어 설명하자면 다음과 같다. 만약 참가자들이 꽃보다 뱀을 봤을 때 더 각성되는지 알고 싶다면, 각성수준의 평균 변화량은 고정효과(`Category`)의 slope로 추정하고 개인차는 무선 기울기(random slope; `(Category|Subject)`)로 추정할 수 있다. 꽃보다 뱀을 보고 많이 각성된 참가자의 기울기는 절대값이 큰 양의 값으로 추정될 것이고, 뱀보다 꽃에 더 각성되는 참가자의 기울기는 음의 값으로 추정될 것이다. 여기서 무선 기울기는 개별 참가자의 특성을 반영하는 추정치라고 볼 수 있다. 참가자가 20명이라면, 선형혼합모형에서 이러한 기울기 값을 20개 얻을 수 있다. 이를 BLUPs이라고 한다. 만약 우리가 참가자들의 fMRI 자료를 가지로 있다면, BLUPs을 regressor로 활용할 수 있다([사례](https://www.sciencedirect.com/science/article/abs/pii/S1053811917303038)). 본 분석에서는 참가자들이 아니라, 자극의 BLUPs을 활용할 것이다. 
+
+가설은 다음과 같다: **각성을 크게 유발한 뱀 사진일수록 연속점멸 억제를 빨리 벗어날 것이다.**  연구 1의 각성 점수에서 뱀 자극은 얼굴과 꽃에 비해 저수준 시각특질 통제 여부에 따라 극적인 변화를 보였다(**그림 B**). 뱀의 각성점수는 평정 전에는 얼굴 수준으로 높았지만 평정 후에는 꽃 수준으로 낮아졌다. 연구 2에서도 뱀 자극은 시각특질 통제의 영향을 두드러지게 받았다(**그림 E**). 뱀과 꽃에 대한 반응시간 차이가 통제 후에 사라졌다. 이에 비해, 정서가(valence) 점수와 얼굴 및 꽃 자극은 시각특질 통제의 영향을 덜 받았으므로 위 가설을 검증할 조건으로 맞지 않다.
+
+연구 1과 연구 2의 참가자는 달랐지만 자극은 같았기 때문에 자극의 BLUPs을 활용하여 위 가설을 검증할 수 있다. (1) 연구 1의 각성 점수를 위한 선형혼합모형에서 `(VisAttr|Image)`으로 추정한 BLUPs은 자극특질 통제 전후로 각성 점수가 변화한 정도를 의미한다. 어떤 자극의 BLUP이 음수라면, 통제 후 그 자극의 각성점수가 작아졌다는 것이다. (2) 연구 2의 breaking time을 위한 선형혼합모형에서 `(VisAttr|Image)`으로 추정한 BLUPs은 자극특질 통제 전후로 탐지 반응시간이 변화한 정도를 의미한다. 어떤 자극의 BLUP이 양수라면, 통제 후 그 자극이 CFS에서 더 늦게 탐지되었다는 것이다. 위 가설에 따르면, (1)과 (2)의 BLUPs은 역상관을 보일 것이다(*단측 가설*). 
+
+
+```{r blups}
+# delta Arousal
+AA <- ranef(SSa.lmer$full_model)$Image
+colnames(AA) <- c("intercept", "Arousal")
+AA <- AA %>% rownames_to_column() %>% 
+  filter(str_detect(rowname, 'snake')) %>% 
+  select(rowname, Arousal) %>% 
+  column_to_rownames(var = "rowname")
+
+# deltal Valence
+VV <- ranef(SSv.lmer$full_model)$Image
+colnames(VV) <- c("intercept", "Valence")
+VV <- VV %>% rownames_to_column() %>% 
+  filter(str_detect(rowname, 'snake')) %>% 
+  select(rowname, Valence) %>% 
+  column_to_rownames(var = "rowname")
+
+# delta BT 
+RR <- ranef(EErt.log$full_model)$Image
+colnames(RR) <- c("intercept", "BreakingTime")
+RR <- RR %>% rownames_to_column() %>% 
+  filter(str_detect(rowname, 'snake')) %>% 
+  select(rowname, BreakingTime) %>% 
+  column_to_rownames(var = "rowname")
+
+BLUPS <- cbind(AA, VV, RR)
+cor.test(formula = ~ Arousal + Valence, data = BLUPS,
+         method = "pearson", alternative = "less")
+
+cor.test(formula = ~ Arousal + BreakingTime, data = BLUPS,
+         method = "pearson", alternative = "less")
+
+```
+
+
+
+```{r fig_corr, eval=TRUE}
+B.P <- ggplot(BLUPS, aes(x=Arousal, y=Valence)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = expression(Delta*" Arousal"), 
+       y = expression(Delta*" Valence")) +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1)
+
+R.P <- ggplot(BLUPS, aes(x=Arousal, y=BreakingTime)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = expression(Delta*" Arousal"), 
+       y = expression(Delta*" Breaking Time")) +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1)
+
+plot_grid(B.P, R.P, ncol = 2, align = "hv", axis = "b",
+          labels = c('J', 'K'), label_size = 20)
+```
+
+분석 결과는 가설에 부합하였다. 저수준 시각특질을 통제한 후에 각성점수가 낮아진 뱀 사진일수록 CFS를 벗어나는 데 걸린 시간도 증가하였다(**그림 F**). 이 결과는 (1) 각성수준이  CFS 지속시간을 결정한다는 점, (2) CFS 지속시간을 결정하는 요인에 의식적인 접근(평정)이 가능하다는 점, (2) 저수준 시각특질이 뱀 탐지에 영향을 끼친다는 점을 시사한다. 
+
+추가 질문은 다음과 같다. 
+(1) Valence는 어떤가? 상관이 유의하지 않았다. (2) 이 결과를 다른 자극 범주에도 확장할 수 있는가? 뱀과 얼굴을 합쳐서 분석하면 상관이 사라졌다. (3) 얼굴은 저수준 시각특질 통제의 영향을 별로 받지 않는데, 그럼 *얼굴은 무엇인가?*  
+
+한편, 시각특질 통제 전후의 반응시간을 비교했을 때, 뱀 자극의 반응시간 변화량이 통계적으로 유의하지 않았다.
+
+```{r rt_posthoc_by_expt}
+EErt.log.emm2 <- emmeans(EErt.log, "VisAttr", by = "Category", 
+                         lmerTest.limit = 13598, type = "response")
+plot(EErt.log.emm2, horizontal = FALSE, type) + facet_grid(cols = vars(Category))
+
+EErt.log.emm2.pair <- update(pairs(EErt.log.emm2), by = NULL, adjust = "holm")
+EErt.log.emm2.pair %>% summary(infer = TRUE) 
+```
+
+<br><br>
+
+****
+
+<br><br>
+
+
+# Session Info
+```{r, collapse=TRUE}
+sessionInfo()
+```
+
+
+***
+[[View on Github `r icon::fa("github", size = 3)`](https://github.com/cogneuro/bCFS_Snake)]{style="float:right"}
